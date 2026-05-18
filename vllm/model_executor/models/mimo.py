@@ -45,6 +45,7 @@ from vllm.model_executor.model_loader.weight_utils import (
 from vllm.model_executor.models.qwen2 import (
     Qwen2Attention,
     Qwen2ForCausalLM,
+    Qwen2MLP,
     Qwen2Model,
 )
 from vllm.sequence import IntermediateTensors
@@ -187,6 +188,9 @@ class MiMoForCausalLM(Qwen2ForCausalLM, nn.Module):
                 if isinstance(module, Qwen2Attention):
                     module.qkv_proj.use_batch_invariant_linear = True
                     module.o_proj.use_batch_invariant_linear = True
+                elif isinstance(module, Qwen2MLP):
+                    module.gate_up_proj.use_batch_invariant_linear = True
+                    module.down_proj.use_batch_invariant_linear = True
 
         self.make_empty_intermediate_tensors = (
             self.model.make_empty_intermediate_tensors

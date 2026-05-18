@@ -84,7 +84,7 @@ from .utils import (
 
 
 def _qwen2_linear(
-    layer: QKVParallelLinear | RowParallelLinear,
+    layer: MergedColumnParallelLinear | QKVParallelLinear | RowParallelLinear,
     x: torch.Tensor,
 ) -> torch.Tensor | tuple[torch.Tensor, torch.nn.Parameter | None]:
     use_batch_invariant_linear = getattr(
@@ -140,9 +140,9 @@ class Qwen2MLP(nn.Module):
         self.act_fn = SiluAndMul()
 
     def forward(self, x):
-        gate_up, _ = self.gate_up_proj(x)
+        gate_up, _ = _qwen2_linear(self.gate_up_proj, x)
         x = self.act_fn(gate_up)
-        x, _ = self.down_proj(x)
+        x, _ = _qwen2_linear(self.down_proj, x)
         return x
 
 
@@ -603,6 +603,9 @@ class Qwen2ForCausalLM(
                 if isinstance(module, Qwen2Attention):
                     module.qkv_proj.use_batch_invariant_linear = True
                     module.o_proj.use_batch_invariant_linear = True
+                elif isinstance(module, Qwen2MLP):
+                    module.gate_up_proj.use_batch_invariant_linear = True
+                    module.down_proj.use_batch_invariant_linear = True
 
         self.make_empty_intermediate_tensors = (
             self.model.make_empty_intermediate_tensors

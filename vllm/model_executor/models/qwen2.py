@@ -41,6 +41,9 @@ from vllm.model_executor.layers.attention import (
     Attention,
     EncoderOnlyAttention,
 )
+from vllm.model_executor.layers.batch_invariant import (
+    matmul_small_m_batch_invariant,
+)
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import (
     MergedColumnParallelLinear,
@@ -78,6 +81,32 @@ from .utils import (
     make_layers,
     maybe_prefix,
 )
+
+
+def _qwen2_linear(
+    layer: QKVParallelLinear | RowParallelLinear,
+    x: torch.Tensor,
+) -> torch.Tensor | tuple[torch.Tensor, torch.nn.Parameter | None]:
+    use_batch_invariant_linear = getattr(
+        layer, "use_batch_invariant_linear", False
+    )
+    if not use_batch_invariant_linear:
+        return layer(x)
+
+    if not hasattr(layer, "weight"):
+        return layer(x)
+    if x.ndim == 2 and x.shape[0] <= 8:
+        bias = layer.bias if not layer.skip_bias_add else None
+        output = matmul_small_m_batch_invariant(x, layer.weight.t())
+        if bias is not None:
+            output = output + bias
+    else:
+        output, output_bias = layer(x)
+        return output if not layer.return_bias else (output, output_bias)
+    if not layer.return_bias:
+        return output
+    output_bias = layer.bias if layer.skip_bias_add else None
+    return output, output_bias
 
 
 class Qwen2MLP(nn.Module):
@@ -211,7 +240,7 @@ class Qwen2Attention(nn.Module):
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
-        qkv, _ = self.qkv_proj(hidden_states)
+        qkv, _ = _qwen2_linear(self.qkv_proj, hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
 
         # Apply QK normalization if enabled (before RoPE)
@@ -232,7 +261,7 @@ class Qwen2Attention(nn.Module):
 
         q, k = self.rotary_emb(positions, q, k)
         attn_output = self.attn(q, k, v)
-        output, _ = self.o_proj(attn_output)
+        output, _ = _qwen2_linear(self.o_proj, attn_output)
         return output
 
 
@@ -565,6 +594,15 @@ class Qwen2ForCausalLM(
             self.lm_head = PPMissingLayer()
 
         self.logits_processor = LogitsProcessor(config.vocab_size)
+        spec_config = getattr(vllm_config, "speculative_config", None)
+        if (
+            getattr(spec_config, "method", None) == "mtp"
+            and vllm_config.model_config.enforce_eager
+        ):
+            for module in self.model.modules():
+                if isinstance(module, Qwen2Attention):
+                    module.qkv_proj.use_batch_invariant_linear = True
+                    module.o_proj.use_batch_invariant_linear = True
 
         self.make_empty_intermediate_tensors = (
             self.model.make_empty_intermediate_tensors

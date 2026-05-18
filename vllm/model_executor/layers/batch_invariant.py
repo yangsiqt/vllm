@@ -217,6 +217,130 @@ def matmul_persistent(
     return c
 
 
+@triton.jit(launch_metadata=_matmul_launch_metadata)
+def matmul_kernel_small_m(
+    a_ptr,
+    b_ptr,
+    c_ptr,
+    M,
+    N,
+    K,
+    stride_am,
+    stride_ak,
+    stride_bk,
+    stride_bn,
+    stride_cm,
+    stride_cn,
+    BLOCK_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr,
+    BLOCK_SIZE_K: tl.constexpr,
+    A_LARGE: tl.constexpr,
+    B_LARGE: tl.constexpr,
+    C_LARGE: tl.constexpr,
+):
+    pid_m = tl.program_id(0)
+    pid_n = tl.program_id(1)
+
+    offs_m = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+    offs_n = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    offs_k_for_mask = tl.arange(0, BLOCK_SIZE_K)
+
+    mask_m = offs_m < M
+    mask_n = offs_n < N
+
+    if A_LARGE or C_LARGE:
+        offs_m = offs_m.to(tl.int64)
+    if B_LARGE or C_LARGE:
+        offs_n = offs_n.to(tl.int64)
+
+    offs_m = tl.where(mask_m, offs_m, 0)
+    offs_n = tl.where(mask_n, offs_n, 0)
+    offs_m = tl.max_contiguous(tl.multiple_of(offs_m, BLOCK_SIZE_M), BLOCK_SIZE_M)
+    offs_n = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N)
+
+    accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
+    k_tiles = tl.cdiv(K, BLOCK_SIZE_K)
+    for ki in range(k_tiles):
+        if A_LARGE or B_LARGE:
+            offs_k = ki * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K).to(tl.int64)
+        else:
+            offs_k = ki * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
+        k_valid = offs_k_for_mask < K - ki * BLOCK_SIZE_K
+        a_ptrs = a_ptr + (
+            offs_m[:, None] * stride_am + offs_k[None, :] * stride_ak
+        )
+        b_ptrs = b_ptr + (
+            offs_k[:, None] * stride_bk + offs_n[None, :] * stride_bn
+        )
+        a = tl.load(a_ptrs, mask=mask_m[:, None] & k_valid[None, :], other=0.0)
+        b = tl.load(b_ptrs, mask=k_valid[:, None] & mask_n[None, :], other=0.0)
+        accumulator = tl.dot(a, b, accumulator)
+
+    c_ptrs = c_ptr + stride_cm * offs_m[:, None] + stride_cn * offs_n[None, :]
+    c = accumulator.to(c_ptr.dtype.element_ty)
+    tl.store(c_ptrs, c, mask=mask_m[:, None] & mask_n[None, :])
+
+
+def matmul_small_m_batch_invariant(
+    a: torch.Tensor,
+    b: torch.Tensor,
+) -> torch.Tensor:
+    assert a.ndim == 2 and b.ndim == 2
+    assert a.shape[1] == b.shape[0], "Incompatible dimensions"
+    assert a.dtype == b.dtype, "Incompatible dtypes"
+
+    M, K = a.shape
+    K, N = b.shape
+    c = torch.empty((M, N), device=a.device, dtype=a.dtype)
+
+    configs = {
+        torch.bfloat16: {
+            "BLOCK_SIZE_M": 1,
+            "BLOCK_SIZE_N": 128,
+            "BLOCK_SIZE_K": 64,
+            "num_stages": 3,
+            "num_warps": 4,
+        },
+        torch.float16: {
+            "BLOCK_SIZE_M": 1,
+            "BLOCK_SIZE_N": 128,
+            "BLOCK_SIZE_K": 64,
+            "num_stages": 3,
+            "num_warps": 4,
+        },
+        torch.float32: {
+            "BLOCK_SIZE_M": 1,
+            "BLOCK_SIZE_N": 64,
+            "BLOCK_SIZE_K": 32,
+            "num_stages": 3,
+            "num_warps": 4,
+        },
+    }
+    grid = (
+        triton.cdiv(M, configs[a.dtype]["BLOCK_SIZE_M"]),
+        triton.cdiv(N, configs[a.dtype]["BLOCK_SIZE_N"]),
+    )
+    matmul_kernel_small_m[grid](
+        a,
+        b,
+        c,
+        M,
+        N,
+        K,
+        a.stride(0),
+        a.stride(1),
+        b.stride(0),
+        b.stride(1),
+        c.stride(0),
+        c.stride(1),
+        A_LARGE=a.numel() > 2**31,
+        B_LARGE=b.numel() > 2**31,
+        C_LARGE=c.numel() > 2**31,
+        **configs[a.dtype],
+    )
+    return c
+
+
 @triton.jit
 def bmm_kernel(
     a_ptr,  # (*, ) pointer to A, (B, M, K)

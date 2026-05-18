@@ -42,7 +42,11 @@ from vllm.model_executor.model_loader.weight_utils import (
     default_weight_loader,
     maybe_remap_kv_scale_name,
 )
-from vllm.model_executor.models.qwen2 import Qwen2ForCausalLM, Qwen2Model
+from vllm.model_executor.models.qwen2 import (
+    Qwen2Attention,
+    Qwen2ForCausalLM,
+    Qwen2Model,
+)
 from vllm.sequence import IntermediateTensors
 
 from .utils import PPMissingLayer, is_pp_missing_parameter, maybe_prefix
@@ -174,6 +178,15 @@ class MiMoForCausalLM(Qwen2ForCausalLM, nn.Module):
             self.lm_head = PPMissingLayer()
 
         self.logits_processor = LogitsProcessor(config.vocab_size)
+        spec_config = getattr(vllm_config, "speculative_config", None)
+        if (
+            getattr(spec_config, "method", None) == "mtp"
+            and vllm_config.model_config.enforce_eager
+        ):
+            for module in self.model.modules():
+                if isinstance(module, Qwen2Attention):
+                    module.qkv_proj.use_batch_invariant_linear = True
+                    module.o_proj.use_batch_invariant_linear = True
 
         self.make_empty_intermediate_tensors = (
             self.model.make_empty_intermediate_tensors

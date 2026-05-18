@@ -82,6 +82,8 @@ from .utils import (
     maybe_prefix,
 )
 
+_QWEN2_MTP_BATCH_INVARIANT_MAX_M = 8
+
 
 def _qwen2_linear(
     layer: MergedColumnParallelLinear | QKVParallelLinear | RowParallelLinear,
@@ -93,9 +95,13 @@ def _qwen2_linear(
     if not use_batch_invariant_linear:
         return layer(x)
 
-    if not hasattr(layer, "weight"):
+    if (
+        not hasattr(layer, "weight")
+        or getattr(layer, "tp_size", 1) != 1
+        or getattr(layer, "quant_config", None) is not None
+    ):
         return layer(x)
-    if x.ndim == 2 and x.shape[0] <= 8:
+    if x.ndim == 2 and x.shape[0] <= _QWEN2_MTP_BATCH_INVARIANT_MAX_M:
         bias = layer.bias if not layer.skip_bias_add else None
         output = matmul_small_m_batch_invariant(x, layer.weight.t())
         if bias is not None:
@@ -107,6 +113,28 @@ def _qwen2_linear(
         return output
     output_bias = layer.bias if layer.skip_bias_add else None
     return output, output_bias
+
+
+def maybe_enable_qwen2_mtp_batch_invariant_linear(
+    model: nn.Module,
+    vllm_config: VllmConfig,
+) -> None:
+    spec_config = getattr(vllm_config, "speculative_config", None)
+    if (
+        getattr(spec_config, "method", None) != "mtp"
+        or not vllm_config.model_config.enforce_eager
+        or vllm_config.parallel_config.tensor_parallel_size != 1
+        or vllm_config.quant_config is not None
+    ):
+        return
+
+    for module in model.modules():
+        if isinstance(module, Qwen2Attention):
+            module.qkv_proj.use_batch_invariant_linear = True
+            module.o_proj.use_batch_invariant_linear = True
+        elif isinstance(module, Qwen2MLP):
+            module.gate_up_proj.use_batch_invariant_linear = True
+            module.down_proj.use_batch_invariant_linear = True
 
 
 class Qwen2MLP(nn.Module):
@@ -594,18 +622,7 @@ class Qwen2ForCausalLM(
             self.lm_head = PPMissingLayer()
 
         self.logits_processor = LogitsProcessor(config.vocab_size)
-        spec_config = getattr(vllm_config, "speculative_config", None)
-        if (
-            getattr(spec_config, "method", None) == "mtp"
-            and vllm_config.model_config.enforce_eager
-        ):
-            for module in self.model.modules():
-                if isinstance(module, Qwen2Attention):
-                    module.qkv_proj.use_batch_invariant_linear = True
-                    module.o_proj.use_batch_invariant_linear = True
-                elif isinstance(module, Qwen2MLP):
-                    module.gate_up_proj.use_batch_invariant_linear = True
-                    module.down_proj.use_batch_invariant_linear = True
+        maybe_enable_qwen2_mtp_batch_invariant_linear(self.model, vllm_config)
 
         self.make_empty_intermediate_tensors = (
             self.model.make_empty_intermediate_tensors

@@ -165,6 +165,8 @@ class Scheduler(SchedulerInterface):
         assert num_gpu_blocks is not None and num_gpu_blocks > 0
 
         self.block_size = block_size
+        self._last_scheduled_prefill_tokens = 0
+        self._last_scheduled_decode_tokens = 0
         self.dcp_world_size = vllm_config.parallel_config.decode_context_parallel_size
         self.pcp_world_size = vllm_config.parallel_config.prefill_context_parallel_size
 
@@ -1106,6 +1108,22 @@ class Scheduler(SchedulerInterface):
             free_encoder_mm_hashes=self.encoder_cache_manager.get_freed_mm_hashes(),
             new_block_ids_to_zero=new_block_ids_to_zero,
             num_spec_tokens_to_schedule=num_spec_tokens_to_schedule,
+        )
+
+        # Classify the work before _update_after_schedule advances each
+        # request's computed-token cursor. A single chunk can finish prefill
+        # and include decode work, so split rather than classifying the whole
+        # request by its current phase.
+        scheduled_prefill_tokens = 0
+        for req_id, scheduled_tokens in num_scheduled_tokens.items():
+            request = self.requests[req_id]
+            prompt_remaining = max(
+                request.num_prompt_tokens - request.num_computed_tokens, 0
+            )
+            scheduled_prefill_tokens += min(scheduled_tokens, prompt_remaining)
+        self._last_scheduled_prefill_tokens = scheduled_prefill_tokens
+        self._last_scheduled_decode_tokens = max(
+            total_num_scheduled_tokens - scheduled_prefill_tokens, 0
         )
 
         # NOTE(Kuntai): this function is designed for multiple purposes:
@@ -2309,6 +2327,12 @@ class Scheduler(SchedulerInterface):
         active_decode_sequences = sum(
             req.num_computed_tokens >= req.num_prompt_tokens for req in self.running
         )
+        skipped_waiting_prefill_tokens = sum(
+            max(req.num_prompt_tokens - req.num_computed_tokens, 0)
+            for req in self.skipped_waiting
+        )
+        kv_cache_total_blocks = self.kv_cache_manager.block_pool.num_gpu_blocks
+        kv_cache_free_blocks = self.kv_cache_manager.block_pool.get_num_free_blocks()
         return SchedulerStats(
             num_running_reqs=len(self.running),
             num_waiting_reqs=len(self.waiting),
@@ -2316,6 +2340,11 @@ class Scheduler(SchedulerInterface):
             waiting_prefill_tokens=waiting_prefill_tokens,
             running_prefill_tokens=running_prefill_tokens,
             active_decode_sequences=active_decode_sequences,
+            scheduled_prefill_tokens=self._last_scheduled_prefill_tokens,
+            scheduled_decode_tokens=self._last_scheduled_decode_tokens,
+            skipped_waiting_prefill_tokens=skipped_waiting_prefill_tokens,
+            kv_cache_free_blocks=kv_cache_free_blocks,
+            kv_cache_total_blocks=kv_cache_total_blocks,
             kv_cache_usage=self.kv_cache_manager.usage,
             prefix_cache_stats=prefix_cache_stats,
             connector_prefix_cache_stats=connector_prefix_cache_stats,

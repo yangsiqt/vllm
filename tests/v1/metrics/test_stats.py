@@ -21,6 +21,11 @@ def test_scheduler_workload_stats_are_backward_compatible():
     assert stats.waiting_prefill_tokens == 0
     assert stats.running_prefill_tokens == 0
     assert stats.active_decode_sequences == 0
+    assert stats.scheduled_prefill_tokens == 0
+    assert stats.scheduled_decode_tokens == 0
+    assert stats.skipped_waiting_prefill_tokens == 0
+    assert stats.kv_cache_free_blocks == 0
+    assert stats.kv_cache_total_blocks == 0
 
 
 def test_prefill_kv_computed_with_cache():

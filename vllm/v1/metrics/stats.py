@@ -181,6 +181,11 @@ class SchedulerStats:
     waiting_prefill_tokens: int = 0
     running_prefill_tokens: int = 0
     active_decode_sequences: int = 0
+    scheduled_prefill_tokens: int = 0
+    scheduled_decode_tokens: int = 0
+    skipped_waiting_prefill_tokens: int = 0
+    kv_cache_free_blocks: int = 0
+    kv_cache_total_blocks: int = 0
 
     # These are used for internal DP load-balancing.
     step_counter: int = 0

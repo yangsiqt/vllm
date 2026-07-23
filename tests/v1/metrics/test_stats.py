@@ -6,12 +6,21 @@ from vllm.v1.metrics.stats import (
     PrefillStats,
     PromptTokenStats,
     RequestStateStats,
+    SchedulerStats,
 )
 
 
 def test_iteration_stats_repr():
     iteration_stats = IterationStats()
     assert repr(iteration_stats).startswith("IterationStats(")
+
+
+def test_scheduler_workload_stats_are_backward_compatible():
+    stats = SchedulerStats()
+
+    assert stats.waiting_prefill_tokens == 0
+    assert stats.running_prefill_tokens == 0
+    assert stats.active_decode_sequences == 0
 
 
 def test_prefill_kv_computed_with_cache():

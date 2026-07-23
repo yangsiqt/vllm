@@ -2297,10 +2297,25 @@ class Scheduler(SchedulerInterface):
         connector_stats_payload = (
             kv_connector_stats.data if kv_connector_stats else None
         )
+        waiting_reqs = itertools.chain(self.waiting, self.skipped_waiting)
+        waiting_prefill_tokens = sum(
+            max(req.num_prompt_tokens - req.num_computed_tokens, 0)
+            for req in waiting_reqs
+        )
+        running_prefill_tokens = sum(
+            max(req.num_prompt_tokens - req.num_computed_tokens, 0)
+            for req in self.running
+        )
+        active_decode_sequences = sum(
+            req.num_computed_tokens >= req.num_prompt_tokens for req in self.running
+        )
         return SchedulerStats(
             num_running_reqs=len(self.running),
             num_waiting_reqs=len(self.waiting),
             num_skipped_waiting_reqs=len(self.skipped_waiting),
+            waiting_prefill_tokens=waiting_prefill_tokens,
+            running_prefill_tokens=running_prefill_tokens,
+            active_decode_sequences=active_decode_sequences,
             kv_cache_usage=self.kv_cache_manager.usage,
             prefix_cache_stats=prefix_cache_stats,
             connector_prefix_cache_stats=connector_prefix_cache_stats,

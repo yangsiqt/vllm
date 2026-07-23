@@ -473,6 +473,36 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
             gauge_scheduler_waiting, per_engine_labelvalues
         )
 
+        gauge_waiting_prefill_tokens = self._gauge_cls(
+            name="vllm:waiting_prefill_tokens",
+            documentation="Outstanding prompt tokens in waiting requests.",
+            multiprocess_mode="mostrecent",
+            labelnames=labelnames,
+        )
+        self.gauge_waiting_prefill_tokens = create_metric_per_engine(
+            gauge_waiting_prefill_tokens, per_engine_labelvalues
+        )
+
+        gauge_running_prefill_tokens = self._gauge_cls(
+            name="vllm:running_prefill_tokens",
+            documentation="Outstanding prompt tokens in running requests.",
+            multiprocess_mode="mostrecent",
+            labelnames=labelnames,
+        )
+        self.gauge_running_prefill_tokens = create_metric_per_engine(
+            gauge_running_prefill_tokens, per_engine_labelvalues
+        )
+
+        gauge_active_decode_sequences = self._gauge_cls(
+            name="vllm:active_decode_sequences",
+            documentation="Running requests that have entered decode.",
+            multiprocess_mode="mostrecent",
+            labelnames=labelnames,
+        )
+        self.gauge_active_decode_sequences = create_metric_per_engine(
+            gauge_active_decode_sequences, per_engine_labelvalues
+        )
+
         gauge_waiting_by_reason = self._gauge_cls(
             name="vllm:num_requests_waiting_by_reason",
             documentation=(
@@ -1077,6 +1107,15 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
                 + scheduler_stats.num_skipped_waiting_reqs
             )
             self.gauge_scheduler_waiting[engine_idx].set(total_waiting)
+            self.gauge_waiting_prefill_tokens[engine_idx].set(
+                scheduler_stats.waiting_prefill_tokens
+            )
+            self.gauge_running_prefill_tokens[engine_idx].set(
+                scheduler_stats.running_prefill_tokens
+            )
+            self.gauge_active_decode_sequences[engine_idx].set(
+                scheduler_stats.active_decode_sequences
+            )
             self.gauge_waiting_by_reason[WAITING_REASON_CAPACITY][engine_idx].set(
                 scheduler_stats.num_waiting_reqs
             )

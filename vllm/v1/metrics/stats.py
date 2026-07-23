@@ -176,6 +176,12 @@ class SchedulerStats:
     num_waiting_reqs: int = 0  # length of the "waiting" request queue
     num_skipped_waiting_reqs: int = 0  # length of the "skipped waiting" queue
 
+    # Workload-aware routing signals. Request counts alone cannot distinguish
+    # a queue of short prompts from a queue of long-context prefills.
+    waiting_prefill_tokens: int = 0
+    running_prefill_tokens: int = 0
+    active_decode_sequences: int = 0
+
     # These are used for internal DP load-balancing.
     step_counter: int = 0
     current_wave: int = 0

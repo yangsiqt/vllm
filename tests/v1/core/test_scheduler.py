@@ -1038,6 +1038,27 @@ def test_reset_connector_cache_no_connector_is_no_op_success():
     assert scheduler.reset_prefix_cache(reset_connector=True) is True
 
 
+def test_prefix_cache_generation_changes_only_after_successful_reset():
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler._prefix_cache_boot_id = "boot"
+    scheduler._prefix_cache_reset_count = 0
+    scheduler.running = []
+    scheduler.connector = Mock()
+    scheduler.kv_cache_manager = Mock()
+    scheduler.kv_cache_manager.reset_prefix_cache.side_effect = [False, True]
+    initial = scheduler.prefix_cache_generation
+
+    assert scheduler.reset_prefix_cache() is False
+    assert scheduler.prefix_cache_generation == initial
+
+    assert scheduler.reset_prefix_cache() is True
+    assert scheduler.prefix_cache_generation != initial
+    assert scheduler.prefix_cache_generation.endswith(":1")
+    scheduler.connector.on_prefix_cache_generation_changed.assert_called_once_with(
+        "boot:1"
+    )
+
+
 # Note - these test cases mirror some of those in test_rejection_sampler.py
 @pytest.mark.parametrize(
     "spec_tokens,output_tokens,expected",

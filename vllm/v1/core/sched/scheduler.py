@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import itertools
 import time
+import uuid
 from collections import defaultdict, deque
 from collections.abc import Iterable
 from dataclasses import replace
@@ -125,6 +126,8 @@ class Scheduler(SchedulerInterface):
         # will have a corresponding KVConnector with Role=WORKER.
         # KV Connector pushes/pull of remote KVs for P/D and offloading.
         self.connector = None
+        self._prefix_cache_boot_id = uuid.uuid4().hex
+        self._prefix_cache_reset_count = 0
         self.connector_prefix_cache_stats: PrefixCacheStats | None = None
         self.recompute_kv_load_failures = True
         self.defer_block_free = False
@@ -137,6 +140,9 @@ class Scheduler(SchedulerInterface):
                 config=self.vllm_config,
                 role=KVConnectorRole.SCHEDULER,
                 kv_cache_config=self.kv_cache_config,
+            )
+            self.connector.on_prefix_cache_generation_changed(
+                self.prefix_cache_generation
             )
             if self.log_stats:
                 self.connector_prefix_cache_stats = PrefixCacheStats()
@@ -168,6 +174,7 @@ class Scheduler(SchedulerInterface):
         self._last_scheduled_prefill_tokens = 0
         self._last_scheduled_decode_tokens = 0
         self.dcp_world_size = vllm_config.parallel_config.decode_context_parallel_size
+
         self.pcp_world_size = vllm_config.parallel_config.prefill_context_parallel_size
 
         # req_id -> Request
@@ -336,6 +343,11 @@ class Scheduler(SchedulerInterface):
         # In-flight requests still prefilling (prefill chunks + in-progress
         # async KV loads). Their remaining-block reservation gates async loads.
         self._inflight_prefills: set[Request] = set()
+
+    @property
+    def prefix_cache_generation(self) -> str:
+        """Process-unique local HBM prefix-cache generation."""
+        return f"{self._prefix_cache_boot_id}:{self._prefix_cache_reset_count}"
 
     def _mamba_block_aligned_split(
         self,
@@ -2258,6 +2270,13 @@ class Scheduler(SchedulerInterface):
 
         if reset_connector:
             reset_successful = self.reset_connector_cache() and reset_successful
+
+        if reset_successful:
+            self._prefix_cache_reset_count += 1
+            if self.connector is not None:
+                self.connector.on_prefix_cache_generation_changed(
+                    self.prefix_cache_generation
+                )
 
         return reset_successful
 

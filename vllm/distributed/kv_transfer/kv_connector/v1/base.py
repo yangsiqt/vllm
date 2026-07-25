@@ -701,3 +701,12 @@ class KVConnectorBase_V1(ABC):
         )
 
         return None
+
+    def on_prefix_cache_generation_changed(self, generation: str) -> None:
+        """Notify the connector that local prefix-cache residency was reset.
+
+        Connectors that publish per-request cache residency can override this
+        hook.  The default is deliberately a no-op so existing connectors stay
+        source compatible.
+        """
+        return None

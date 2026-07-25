@@ -114,6 +114,13 @@ class LMCacheConnectorV1(KVConnectorBase_V1):
 
         self._kv_cache_events: LMCacheKVEvents | None = None
 
+    def on_prefix_cache_generation_changed(self, generation: str) -> None:
+        callback = getattr(
+            self._lmcache_engine, "on_prefix_cache_generation_changed", None
+        )
+        if callback is not None:
+            callback(generation)
+
     # ==============================
     # Worker-side methods
     # ==============================

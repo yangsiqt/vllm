@@ -503,6 +503,18 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
             gauge_active_decode_sequences, per_engine_labelvalues
         )
 
+        gauge_remaining_decode_tokens = self._gauge_cls(
+            name="vllm:remaining_decode_tokens",
+            documentation=(
+                "Maximum remaining generation tokens in unfinished requests."
+            ),
+            multiprocess_mode="mostrecent",
+            labelnames=labelnames,
+        )
+        self.gauge_remaining_decode_tokens = create_metric_per_engine(
+            gauge_remaining_decode_tokens, per_engine_labelvalues
+        )
+
         gauge_scheduled_prefill_tokens = self._gauge_cls(
             name="vllm:scheduled_prefill_tokens",
             documentation="Prompt tokens scheduled in the most recent step.",
@@ -1165,6 +1177,9 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
             )
             self.gauge_active_decode_sequences[engine_idx].set(
                 scheduler_stats.active_decode_sequences
+            )
+            self.gauge_remaining_decode_tokens[engine_idx].set(
+                scheduler_stats.remaining_decode_tokens
             )
             self.gauge_scheduled_prefill_tokens[engine_idx].set(
                 scheduler_stats.scheduled_prefill_tokens

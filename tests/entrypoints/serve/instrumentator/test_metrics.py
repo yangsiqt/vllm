@@ -187,6 +187,7 @@ EXPECTED_METRICS_V1 = [
     "vllm:prefix_cache_queries",
     "vllm:prefix_cache_hits",
     "vllm:num_preemptions_total",
+    "vllm:remaining_decode_tokens",
     "vllm:prompt_tokens_total",
     "vllm:generation_tokens_total",
     "vllm:iteration_tokens_total",

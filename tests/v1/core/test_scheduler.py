@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import dataclasses
+import itertools
 from unittest.mock import Mock
 
 import pytest
@@ -27,7 +28,7 @@ from vllm.utils.hashing import sha256
 from vllm.v1.core.encoder_cache_manager import EncoderCacheManager
 from vllm.v1.core.kv_cache_utils import get_request_block_hasher, init_none_hash
 from vllm.v1.core.sched.output import CachedRequestData, SchedulerOutput
-from vllm.v1.core.sched.scheduler import Scheduler
+from vllm.v1.core.sched.scheduler import Scheduler, _get_remaining_decode_tokens
 from vllm.v1.engine import FinishReason
 from vllm.v1.kv_cache_interface import (
     FullAttentionSpec,
@@ -74,6 +75,26 @@ def test_get_num_unfinished_requests():
     for i, request in enumerate(requests):
         scheduler.finish_requests(request.request_id, RequestStatus.FINISHED_STOPPED)
         assert scheduler.get_num_unfinished_requests() == len(requests) - i - 1
+
+
+def test_remaining_decode_tokens_cover_scheduler_queues():
+    requests = create_requests(num_requests=3, max_tokens=16)
+    running = [requests[0]]
+    waiting = [requests[1]]
+    skipped_waiting = [requests[2]]
+    assert _get_remaining_decode_tokens(
+        itertools.chain(running, waiting, skipped_waiting)
+    ) == 48
+
+    requests[0].append_output_token_ids([1, 2, 3])
+    assert _get_remaining_decode_tokens(
+        itertools.chain(running, waiting, skipped_waiting)
+    ) == 45
+
+    running.clear()
+    assert _get_remaining_decode_tokens(
+        itertools.chain(running, waiting, skipped_waiting)
+    ) == 32
 
 
 @pytest.mark.parametrize(

@@ -66,6 +66,14 @@ from vllm.v1.utils import record_function_or_nullcontext
 logger = init_logger(__name__)
 
 
+def _get_remaining_decode_tokens(requests: Iterable[Request]) -> int:
+    return sum(
+        max(request.max_tokens - request.num_output_tokens, 0)
+        for request in requests
+        if request.sampling_params is not None
+    )
+
+
 class Scheduler(SchedulerInterface):
     def __init__(
         self,
@@ -2346,6 +2354,9 @@ class Scheduler(SchedulerInterface):
         active_decode_sequences = sum(
             req.num_computed_tokens >= req.num_prompt_tokens for req in self.running
         )
+        remaining_decode_tokens = _get_remaining_decode_tokens(
+            itertools.chain(self.running, self.waiting, self.skipped_waiting)
+        )
         skipped_waiting_prefill_tokens = sum(
             max(req.num_prompt_tokens - req.num_computed_tokens, 0)
             for req in self.skipped_waiting
@@ -2359,6 +2370,7 @@ class Scheduler(SchedulerInterface):
             waiting_prefill_tokens=waiting_prefill_tokens,
             running_prefill_tokens=running_prefill_tokens,
             active_decode_sequences=active_decode_sequences,
+            remaining_decode_tokens=remaining_decode_tokens,
             scheduled_prefill_tokens=self._last_scheduled_prefill_tokens,
             scheduled_decode_tokens=self._last_scheduled_decode_tokens,
             skipped_waiting_prefill_tokens=skipped_waiting_prefill_tokens,

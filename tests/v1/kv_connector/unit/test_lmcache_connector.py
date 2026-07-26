@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -64,11 +65,22 @@ def mock_connector():
             connector, LMCacheConnectorV1
         )
     )
+    connector.on_new_request = LMCacheConnectorV1.on_new_request.__get__(
+        connector, LMCacheConnectorV1
+    )
     connector.take_events = LMCacheConnectorV1.take_events.__get__(
         connector, LMCacheConnectorV1
     )
 
     return connector
+
+
+def test_on_new_request_forwards_scheduler_admission(mock_connector):
+    request = SimpleNamespace(request_id="request-1")
+
+    mock_connector.on_new_request(request)
+
+    mock_connector._lmcache_engine.on_new_request.assert_called_once_with(request)
 
 
 class TestGetKVConnectorKVCacheEvents:

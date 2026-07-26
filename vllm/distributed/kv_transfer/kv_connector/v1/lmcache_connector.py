@@ -263,6 +263,16 @@ class LMCacheConnectorV1(KVConnectorBase_V1):
     # ==============================
     # Scheduler-side methods
     # ==============================
+    def on_new_request(self, request: "Request") -> None:
+        """Forward Scheduler admission to LMCache when supported.
+
+        Args:
+            request: Newly enqueued vLLM request.
+        """
+        on_new_request = getattr(self._lmcache_engine, "on_new_request", None)
+        if callable(on_new_request):
+            on_new_request(request)
+
     def get_num_new_matched_tokens(
         self,
         request: "Request",

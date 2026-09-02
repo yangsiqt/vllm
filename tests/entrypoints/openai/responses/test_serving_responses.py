@@ -34,6 +34,7 @@ from vllm.entrypoints.generate.base.protocol import (
 from vllm.entrypoints.mcp.tool_server import ToolServer
 from vllm.entrypoints.openai.responses.context import ConversationContext, SimpleContext
 from vllm.entrypoints.openai.responses.protocol import (
+    ResponseCompletedEvent,
     ResponseCreatedEvent,
     ResponseRawMessageAndToken,
     ResponsesRequest,
@@ -53,6 +54,7 @@ from vllm.inputs import tokens_input
 from vllm.outputs import CompletionOutput, RequestOutput
 from vllm.parser.harmony import Segment
 from vllm.sampling_params import SamplingParams
+from vllm.v1.metrics.stats import RequestStateStats
 
 
 class MockConversationContext(ConversationContext):
@@ -438,6 +440,192 @@ async def test_reasoning_tokens_counted_for_text_reasoning_model(monkeypatch):
     )
 
     assert response.usage.output_tokens_details.reasoning_tokens == 1
+
+
+def _make_timing_serving(enable_per_request_metrics: bool):
+    engine_client = MagicMock()
+    model_config = MagicMock()
+    model_config.hf_config.model_type = "test"
+    model_config.get_diff_sampling_param.return_value = {}
+    engine_client.model_config = model_config
+    engine_client.input_processor = MagicMock()
+    engine_client.renderer = MagicMock()
+
+    return OpenAIServingResponses(
+        engine_client=engine_client,
+        models=MagicMock(),
+        online_renderer=MagicMock(),
+        request_logger=None,
+        chat_template=None,
+        chat_template_content_format="auto",
+        enable_per_request_metrics=enable_per_request_metrics,
+    )
+
+
+def _make_timing_context(metrics: RequestStateStats | None) -> SimpleContext:
+    context = SimpleContext()
+    completion = CompletionOutput(
+        index=0,
+        text="one two three four five",
+        token_ids=[1, 2, 3, 4, 5],
+        cumulative_logprob=0.0,
+        logprobs=None,
+        finish_reason="stop",
+        stop_reason=None,
+    )
+    context.append_output(
+        RequestOutput(
+            request_id="req_0",
+            prompt="hello",
+            prompt_token_ids=[6, 7],
+            prompt_logprobs=None,
+            outputs=[completion],
+            finished=True,
+            metrics=metrics,
+            num_cached_tokens=0,
+        )
+    )
+    context.request_metrics = metrics
+    return context
+
+
+async def _empty_context_generator():
+    if False:
+        yield
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enable_per_request_metrics", [False, True])
+async def test_non_streaming_per_request_timing_metrics(
+    enable_per_request_metrics: bool,
+) -> None:
+    stats = RequestStateStats(
+        queued_ts=1.0,
+        scheduled_ts=1.1,
+        first_token_ts=1.3,
+        last_token_ts=2.3,
+    )
+    serving = _make_timing_serving(enable_per_request_metrics)
+    context = _make_timing_context(stats)
+    request = ResponsesRequest(model="test-model", input="hello")
+
+    response = await serving.responses_full_generator(
+        request=request,
+        sampling_params=SamplingParams(max_tokens=8),
+        result_generator=_empty_context_generator(),
+        context=context,
+        model_name="test-model",
+        tokenizer=MagicMock(),
+        request_metadata=RequestResponseMetadata(request_id="req"),
+        created_time=0,
+    )
+
+    assert response.usage is not None
+    assert response.usage.output_tokens == 5
+    if not enable_per_request_metrics:
+        assert response.metrics is None
+        return
+
+    assert response.metrics is not None
+    assert response.metrics.time_to_first_token_ms == pytest.approx(200.0)
+    assert response.metrics.generation_time_ms == pytest.approx(1000.0)
+    assert response.metrics.queue_time_ms == pytest.approx(100.0)
+    assert response.metrics.mean_itl_ms == pytest.approx(250.0)
+    assert response.metrics.tokens_per_second == pytest.approx(5 / 1.2)
+
+
+@pytest.mark.asyncio
+async def test_per_request_timing_metrics_without_engine_stats() -> None:
+    serving = _make_timing_serving(enable_per_request_metrics=True)
+    context = _make_timing_context(metrics=None)
+
+    response = await serving.responses_full_generator(
+        request=ResponsesRequest(model="test-model", input="hello"),
+        sampling_params=SamplingParams(max_tokens=8),
+        result_generator=_empty_context_generator(),
+        context=context,
+        model_name="test-model",
+        tokenizer=MagicMock(),
+        request_metadata=RequestResponseMetadata(request_id="req"),
+        created_time=0,
+    )
+
+    assert response.metrics is not None
+    assert response.metrics.time_to_first_token_ms is None
+    assert response.metrics.generation_time_ms is None
+    assert response.metrics.queue_time_ms is None
+    assert response.metrics.mean_itl_ms is None
+    assert response.metrics.tokens_per_second is None
+
+
+@pytest.mark.asyncio
+async def test_streaming_metrics_only_populated_on_completed_event() -> None:
+    stats = RequestStateStats(
+        queued_ts=1.0,
+        scheduled_ts=1.1,
+        first_token_ts=1.3,
+        last_token_ts=2.3,
+    )
+    serving = _make_timing_serving(enable_per_request_metrics=True)
+    context = _make_timing_context(stats)
+    request = ResponsesRequest(model="test-model", input="hello", stream=True)
+
+    events = [
+        event
+        async for event in serving.responses_stream_generator(
+            request=request,
+            sampling_params=SamplingParams(max_tokens=8),
+            result_generator=_empty_context_generator(),
+            context=context,
+            model_name="test-model",
+            tokenizer=MagicMock(),
+            request_metadata=RequestResponseMetadata(request_id="req"),
+            created_time=1,
+        )
+    ]
+
+    assert all(event.response.metrics is None for event in events[:-1])
+    assert isinstance(events[-1], ResponseCompletedEvent)
+    assert events[-1].response.metrics is not None
+    assert events[-1].response.metrics.time_to_first_token_ms == pytest.approx(200.0)
+
+
+@pytest.mark.asyncio
+async def test_multi_turn_request_metrics_are_not_attributable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    serving = _make_timing_serving(enable_per_request_metrics=True)
+    context = MockConversationContext()
+    monkeypatch.setattr(
+        context, "need_builtin_tool_call", MagicMock(side_effect=[True, False])
+    )
+    stats = RequestStateStats(scheduled_ts=1.0, last_token_ts=2.0)
+
+    async def generate(*args, **kwargs):
+        yield RequestOutput(
+            request_id=kwargs.get("request_id", "req"),
+            prompt=None,
+            prompt_token_ids=[],
+            prompt_logprobs=None,
+            outputs=[],
+            finished=True,
+            metrics=stats,
+        )
+
+    monkeypatch.setattr(serving.engine_client, "generate", generate)
+
+    results = [
+        result
+        async for result in serving._generate_with_builtin_tools(
+            request_id="req",
+            engine_input=tokens_input([1]),
+            sampling_params=SamplingParams(max_tokens=8),
+            context=context,
+        )
+    ]
+
+    assert len(results) == 2
+    assert context.request_metrics_attributable is False
 
 
 class TestExtractAllowedToolsFromMcpRequests:

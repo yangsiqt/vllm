@@ -144,6 +144,7 @@ async def init_generate_state(
             enable_prompt_tokens_details=args.enable_prompt_tokens_details,
             enable_force_include_usage=args.enable_force_include_usage,
             enable_log_outputs=args.enable_log_outputs,
+            enable_per_request_metrics=args.enable_per_request_metrics,
             default_chat_template_kwargs=default_chat_template_kwargs,
         )
         if "generate" in supported_tasks

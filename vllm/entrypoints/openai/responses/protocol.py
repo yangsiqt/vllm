@@ -60,7 +60,7 @@ from vllm.entrypoints.chat_utils import (
     ChatCompletionMessageParam,
     ChatTemplateContentFormatOption,
 )
-from vllm.entrypoints.generate.base.protocol import StopParam
+from vllm.entrypoints.generate.base.protocol import PerRequestMetrics, StopParam
 from vllm.entrypoints.serve.engine.protocol import OpenAIBaseModel
 from vllm.exceptions import VLLMValidationError
 from vllm.logger import init_logger
@@ -676,6 +676,7 @@ class ResponsesResponse(OpenAIBaseModel):
     truncation: Literal["auto", "disabled"]
     usage: ResponseUsage | None = None
     user: str | None = None
+    metrics: PerRequestMetrics | None = None
 
     presence_penalty: float | None = Field(
         default=None,
@@ -749,6 +750,7 @@ class ResponsesResponse(OpenAIBaseModel):
         output_messages: ResponseInputOutputMessage | None = None,
         kv_transfer_params: dict[str, Any] | None = None,
         ec_transfer_params: dict[str, Any] | None = None,
+        metrics: PerRequestMetrics | None = None,
     ) -> "ResponsesResponse":
         incomplete_details: IncompleteDetails | None = None
         if status == "incomplete":
@@ -790,6 +792,7 @@ class ResponsesResponse(OpenAIBaseModel):
             usage=usage,
             kv_transfer_params=kv_transfer_params,
             ec_transfer_params=ec_transfer_params,
+            metrics=metrics,
         )
 
 

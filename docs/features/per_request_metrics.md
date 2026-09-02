@@ -120,6 +120,20 @@ the same `metrics` response field. As with `n > 1`, metrics are omitted for
 requests with multiple prompts, because the timing data cannot be attributed to
 a single prompt's generation.
 
+## Responses API
+
+Per-request timing metrics are also available on the `/v1/responses` endpoint.
+For non-streaming requests, they are returned in the top-level `metrics` field.
+For streaming requests, they are populated on the response carried by the
+terminal `response.completed` event; no separate metrics-only event is emitted.
+Unlike Chat Completions, Responses clients do not need to request a final usage
+chunk because the terminal event is always emitted.
+
+Responses requests that invoke built-in tools can contain multiple model
+generation turns. Timing metrics are suppressed for these requests because the
+engine records each turn separately and a single set of timings cannot be
+accurately attributed to the whole response.
+
 ## Relationship to Prometheus Metrics
 
 The `metrics` response field provides per-request values for a single request.
